@@ -1,0 +1,434 @@
+---
+title: "Código final"
+author: "Lizárraga Jacobo, Ransom Treviño, Villegas Monjardin, García Bernal"
+date: "2026-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Carga de datos
+
+```{r}
+# Diccionario de Variables Utilizadas:
+# - molec: Año de levantamiento de la encuesta (2020, 2021, 2022)
+# - sexo / sexo_c: Sexo del encuestado (1: Hombre, 2: Mujer)
+# - edad / grupo_edad: Edad cumplida / Rangos (18-29, 30-44, 45-59, 60 y más)
+# - nivel / escolaridad: Nivel educativo (Básica o menos, Media superior, Superior)
+# - p1: Alfabetismo (1: Sabe leer y escribir — Criterio de inclusión)
+# - perslecl / perslecl_c: Lee libros, revistas o periódicos (1: Sí, 2: No)
+# - perslec: Lee algún material MOLEC (libros, revistas, periódicos, historietas, páginas web)
+# - p3_1 (Libros), p3_2 (Revistas), p3_3 (Periódicos), p3_5 (Internet/blogs): Lectura específica (1: Sí, 2: No)
+# - p4: Cantidad de libros leídos en los últimos 12 meses (Numérica)
+# - p26: Minutos continuos de lectura por sesión (Numérica)
+# - l_format / formato: Formato de lectura de libros (1: Digital, 2: Impreso, 3: Ambos)
+# - p5 / motivo: Motivo principal de lectura de libros
+# - p32 / motivo_no: Motivo principal de no lectura
+# - factor: Factor de expansión poblacional (Ponderación INEGI)
+
+# Carga directa si existe el archivo preparado; de lo contrario, procesa archivos crudos
+if (file.exists("DatosEquipo6.csv")) {
+  Base <- read.csv("DatosEquipo6.csv", fileEncoding = "latin1")
+  Base$molec <- factor(Base$molec)
+  Base$sexo_c <- factor(Base$sexo_c, levels = c("Hombre", "Mujer"))
+  Base$grupo_edad <- factor(Base$grupo_edad, levels = c("18-29", "30-44", "45-59", "60 y más"))
+  Base$escolaridad <- factor(Base$escolaridad, levels = c("Básica o menos", "Media superior", "Superior"))
+  Base$formato <- factor(Base$formato, levels = c("Impreso", "Digital", "Ambos"))
+} else {
+  leer_molec <- function(archivo, anio) {
+    d <- read.csv(archivo, fileEncoding = "latin1", colClasses = "character", strip.white = TRUE)
+    names(d) <- tolower(trimws(names(d)))
+    d$molec <- anio
+    return(d)
+  }
+  M20 <- leer_molec("Datos_molec_2020.csv", 2020)
+  M21 <- leer_molec("Datos_molec_2021.CSV", 2021)
+  M22 <- leer_molec("Datos_molec_2022.CSV", 2022)
+  
+  ids  <- c("folio", "entidad", "control", "viv_sel", "num_hog", "n_ren_el")
+  vars <- c("sexo", "edad", "nivel", "p1", "perslecl", "perslec", "p3_1", "p3_2", "p3_3", "p3_5", "p4", "p26", "l_format", "p5", "p32", "factor")
+  
+  Bruta <- rbind(M20[, c("molec", ids, vars)], M21[, c("molec", ids, vars)], M22[, c("molec", ids, vars)])
+  for (v in vars) Bruta[[v]] <- as.numeric(Bruta[[v]])
+  
+  # Filtro de población alfabeta (p1 == 1) -> Excluye 137 registros no alfabetizados
+  Base <- subset(Bruta, p1 == 1)
+  Base$sexo_c     <- factor(Base$sexo, levels = 1:2, labels = c("Hombre", "Mujer"))
+  Base$grupo_edad <- cut(Base$edad, breaks = c(17, 29, 44, 59, Inf), labels = c("18-29", "30-44", "45-59", "60 y más"))
+  Base$nivel[Base$nivel == 99] <- NA
+  Base$escolaridad <- factor(ifelse(Base$nivel <= 3, "Básica o menos", ifelse(Base$nivel %in% c(4, 6), "Media superior", "Superior")), levels = c("Básica o menos", "Media superior", "Superior"))
+  
+  si_no <- function(x) factor(x, levels = 1:2, labels = c("Sí", "No"))
+  for (v in c("perslecl", "p3_1", "p3_2", "p3_3", "p3_5")) Base[[paste0(v, "_c")]] <- si_no(Base[[v]])
+  
+  Base$p4[Base$p3_1 != 1]     <- NA
+  Base$p26[Base$perslec != 1] <- NA
+  Base$formato   <- factor(Base$l_format, levels = c(2, 1, 3), labels = c("Impreso", "Digital", "Ambos"))
+  Base$motivo    <- factor(Base$p5, levels = 1:6, labels = c("Trabajo o estudio", "Trabajo o estudio", "Cultura general", "Entretenimiento", "Religión", "Otro"))
+  Base$motivo_no <- factor(Base$p32, levels = 1:6, labels = c("Falta de interés o gusto", "Prefiere otras actividades", "Falta de tiempo", "Falta de dinero", "Problemas de salud", "Otro"))
+  Base$molec     <- factor(Base$molec)
+  
+  write.csv(Base, "DatosEquipo6.csv", row.names = FALSE)
+}
+```
+
+#Análisis descriptivo univariado
+
+```{r}
+# Medidas descriptivas generales
+medidas <- function(x) {
+  x <- x[!is.na(x)]; n <- length(x); m <- mean(x); s <- sd(x)
+  q <- unname(quantile(x, c(.25, .5, .75)))
+  m2 <- sum((x - m)^2) / n; m3 <- sum((x - m)^3) / n; m4 <- sum((x - m)^4) / n
+  sesgo    <- sqrt(n * (n - 1)) / (n - 2) * m3 / m2^1.5
+  curtosis <- (n - 1) / ((n - 2) * (n - 3)) * ((n + 1) * (m4 / m2^2 - 3) + 6)
+  c(n = n, media = m, mediana = q[2], DE = s, CV = 100 * s / m, Q1 = q[1], Q3 = q[3], RIC = q[3] - q[1], Sesgo = sesgo, Curtosis = curtosis)
+}
+
+kable(round(t(sapply(list(Edad = Base$edad, `Libros (p4)` = Base$p4, `Minutos (p26)` = Base$p26), medidas)), 2),
+      caption = "Medidas Descriptivas Globales (2020-2022)")
+
+# Histogramas de Libros y Minutos de lectura por sesión
+par(mfrow = c(1, 2), mar = c(4.5, 4.2, 2.5, 1))
+hist(pmin(Base$p4, 21), breaks = seq(0.5, 21.5, 1), col = "#2a78d6", border = "white",
+     main = "Libros leídos al año (p4)", xlab = "Número de libros (21 = 21 o más)", ylab = "Frecuencia")
+abline(v = median(Base$p4, na.rm = TRUE), lty = 2, lwd = 1.5)
+
+hist(pmin(Base$p26, 250), breaks = seq(0, 250, 10), col = "#2a78d6", border = "white",
+     main = "Minutos de lectura por sesión (p26)", xlab = "Minutos (250 = 250 o más)", ylab = "Frecuencia")
+abline(v = median(Base$p26, na.rm = TRUE), lty = 2, lwd = 1.5)
+```
+
+#Comparaciones y Tendencias
+
+```{r}
+# Porcentaje de lectura por tipo de material y grupo de edad
+mats <- c(perslecl = "Total Lectores", p3_1 = "Libros", p3_2 = "Revistas", p3_3 = "Periódicos", p3_5 = "Internet/Blogs")
+pct_edad <- sapply(names(mats), function(m) 100 * tapply(Base[[m]] == 1, Base$grupo_edad, mean, na.rm = TRUE))
+colnames(pct_edad) <- mats
+kable(round(t(pct_edad), 1), caption = "Porcentaje de Lectores por Grupo de Edad (%)")
+
+# Medianas por grupo de edad
+med_libros  <- tapply(Base$p4, Base$grupo_edad, median, na.rm = TRUE)
+med_minutos <- tapply(Base$p26, Base$grupo_edad, median, na.rm = TRUE)
+kable(data.frame(`Mediana Libros` = med_libros, `Mediana Minutos` = med_minutos), caption = "Medianas de Intensidad Lectora por Grupo de Edad")
+
+# Gráfico de cajas para libros y minutos según grupo de edad
+cols <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
+par(mfrow = c(1, 2), mar = c(4.5, 4.2, 2.5, 1))
+boxplot(p4 ~ grupo_edad, data = Base, col = cols, ylim = c(0, 20), main = "Libros Leídos por Grupo de Edad", xlab = "Grupo de Edad", ylab = "Libros")
+points(1:4, tapply(Base$p4, Base$grupo_edad, mean, na.rm = TRUE), pch = 23, bg = "white")
+
+boxplot(p26 ~ grupo_edad, data = Base, col = cols, ylim = c(0, 200), main = "Minutos Continuos por Grupo de Edad", xlab = "Grupo de Edad", ylab = "Minutos")
+points(1:4, tapply(Base$p26, Base$grupo_edad, mean, na.rm = TRUE), pch = 23, bg = "white")
+
+
+```
+
+
+```{r}
+# Adopción de formato digital por año y por grupo de edad 
+dig <- ifelse(is.na(Base$formato), NA, Base$formato %in% c("Digital", "Ambos"))
+pct_dig_anio <- 100 * tapply(dig, Base$molec, mean, na.rm = TRUE)
+pct_dig_edad_anio <- 100 * tapply(dig, list(Base$molec, Base$grupo_edad), mean, na.rm = TRUE)
+
+kable(round(pct_dig_anio, 1), caption = "% de Lectores de Libros en Digital por Año (2020-2022)")
+kable(round(pct_dig_edad_anio, 1), caption = "% de Lectores de Libros en Digital por Año y Grupo de Edad")
+```
+
+
+```{r}
+# Tendencia temporal de lectura por material (2020-2022)
+par(mfrow = c(1, 4), mar = c(3, 3, 2.5, 0.5), oma = c(2.5, 1.5, 0, 0))
+for (m in c("p3_1", "p3_2", "p3_3", "p3_5")) {
+  tab <- 100 * tapply(Base[[m]] == 1, list(Base$molec, Base$grupo_edad), mean, na.rm = TRUE)
+  matplot(2020:2022, tab, type = "b", pch = 16:19, lty = 1, lwd = 2, col = cols, ylim = c(0, 65), xaxt = "n", main = mats[m])
+  axis(1, at = 2020:2022)
+}
+mtext("% del grupo de edad", side = 2, outer = TRUE)
+```
+
+
+# Verificación de supuestos
+
+```{r}
+# 1. CARGA DE DATOS 
+
+datos <- read.csv("DatosEquipo6.csv", fileEncoding = "latin1")
+alfa <- 0.04
+conf <- 1 - alfa  # 96%
+
+# Recrear grupo_edad por seguridad
+datos$grupo_edad <- cut(datos$edad, breaks = c(17, 29, 44, 59, Inf), 
+                        labels = c("18-29", "30-44", "45-59", "60 y mas"))
+
+# Subconjuntos filtrados por EDAD NUMÉRICA 
+jovenes      <- subset(datos, edad >= 18 & edad <= 29)
+mayores      <- subset(datos, edad >= 60)
+adultos45_59 <- subset(datos, edad >= 45 & edad <= 59)
+d2020        <- subset(datos, molec == 2020)
+d2022        <- subset(datos, molec == 2022)
+
+# 2. VERIFICACIÓN DE SUPUESTOS 
+
+# Tamaños muestrales para TLC (Verificación n > 30)
+cat("[TLC - Muestras n > 30] Jóvenes:", nrow(jovenes), 
+    "| Adultos 45-59:", nrow(adultos45_59),
+    "| Mayores:", nrow(mayores), 
+    "| 2020:", nrow(d2020), 
+    "| 2022:", nrow(d2022), 
+    "| Minutos (p26):", sum(!is.na(datos$p26)), "\n")
+
+# Chi-cuadrada: Frecuencias esperadas >= 5 
+lectores_libros <- subset(datos, p3_1 == 1 & !is.na(l_format))
+tabla_chi       <- table(lectores_libros$grupo_edad, lectores_libros$l_format)
+chi_base        <- chisq.test(tabla_chi)
+cat("[Chi^2 - PH 1] Mínima frecuencia esperada:", round(min(chi_base$expected), 2), 
+    "-> Cumple (>= 5):", min(chi_base$expected) >= 5, "\n")
+
+# Prueba F de varianzas 
+test_var    <- var.test(jovenes$p4, adultos45_59$p4, conf.level = conf)
+var_iguales <- test_var$p.value > alfa
+cat("[F-Test - IC 4 / PH 2] p-value:", round(test_var$p.value, 6), 
+    "-> Varianzas iguales (var.equal):", var_iguales, "\n")
+```
+
+#Intervalos de confianza y pruebas de hipótesis
+
+```{r}
+# IC 1: Dif. de Proporciones - Lectura en Internet (p3_5 == 1: 18-29 vs 60+)
+x_jovenes_net <- sum(jovenes$p3_5 == 1, na.rm = TRUE)
+x_mayores_net <- sum(mayores$p3_5 == 1, na.rm = TRUE)
+
+ic1 <- prop.test(c(x_jovenes_net, x_mayores_net),
+                 c(nrow(jovenes), nrow(mayores)), 
+                 conf.level = conf)
+
+# IC 2: Dif. de Proporciones - Lectura de Libros (p3_1 == 1: 2020 vs 2022)
+x_2020_lib <- sum(d2020$p3_1 == 1, na.rm = TRUE)
+x_2022_lib <- sum(d2022$p3_1 == 1, na.rm = TRUE)
+
+ic2 <- prop.test(c(x_2020_lib, x_2022_lib),
+                 c(nrow(d2020), nrow(d2022)), 
+                 conf.level = conf)
+
+# IC 3: Media Poblacional de Minutos de Lectura Continua (p26)
+ic3 <- t.test(datos$p26, conf.level = conf)
+
+# IC 4: Cociente de Varianzas de Libros Leídos (p4: 18-29 vs 45-59)
+ic4 <- test_var  # Prueba F calculada previamente al 96%
+
+# PRUEBA 1: Chi-cuadrada de Independencia (Grupo de Edad vs Formato de Libro)
+# H0: El formato de libro es independiente del grupo de edad.
+# H1: El formato de libro depende del grupo de edad.
+
+val_crit_chi <- qchisq(1 - alfa, df = chi_base$parameter)
+
+# PRUEBA 2: Diferencia de Medias t-Student (Libros leídos: 18-29 > 45-59) Unilateral
+# H0: mu_18_29 - mu_45_59 <= 0
+# H1: mu_18_29 - mu_45_59 > 0
+
+ph2 <- t.test(jovenes$p4, adultos45_59$p4, alternative = "greater", 
+              var.equal = var_iguales, conf.level = conf)
+val_crit_t <- qt(1 - alfa, df = ph2$parameter)
+
+# PRUEBA 3: Diferencia de Proporciones Z (Libro Digital: 2022 > 2020) Unilateral
+# H0: p_2022 - p_2020 <= 0
+# H1: p_2022 - p_2020 > 0
+
+x_dig2020 <- sum(d2020$formato %in% c("Digital", "Ambos"), na.rm = TRUE)
+n_dig2020 <- sum(!is.na(d2020$formato))
+x_dig2022 <- sum(d2022$formato %in% c("Digital", "Ambos"), na.rm = TRUE)
+n_dig2022 <- sum(!is.na(d2022$formato))
+
+ph3 <- prop.test(c(x_dig2022, x_dig2020), c(n_dig2022, n_dig2020), 
+                 alternative = "greater", conf.level = conf)
+
+val_crit_z  <- qnorm(1 - alfa)
+z_calculado <- sqrt(ph3$statistic)
+```
+
+#Tablas resumen
+
+```{r}
+# Tabla 1: Resumen de Intervalos de Confianza (96%)
+tabla_ic <- data.frame(
+  `Intervalo_de_Confianza` = c(
+    "IC 1: Prop. Internet (18-29 vs 60+)",
+    "IC 2: Prop. Libros (2020 vs 2022)",
+    "IC 3: Media Minutos Lectura (p26)",
+    "IC 4: Cociente Varianzas (18-29 / 45-59)"
+  ),
+  `Distribucion` = c("Normal (Z)", "Normal (Z)", "t-Student", "F de Snedecor"),
+  `Limite_Inferior` = c(round(ic1$conf.int[1], 4), round(ic2$conf.int[1], 4), round(ic3$conf.int[1], 2), round(ic4$conf.int[1], 4)),
+  `Limite_Superior` = c(round(ic1$conf.int[2], 4), round(ic2$conf.int[2], 4), round(ic3$conf.int[2], 2), round(ic4$conf.int[2], 4))
+)
+
+knitr::kable(tabla_ic, caption = "Resumen de Intervalos de Confianza al 96% de Confianza")
+
+# Tabla 2: Resumen de Pruebas de Hipótesis (alpha = 0.04)
+tabla_ph <- data.frame(
+  Prueba = c(
+    "PH 1: Independencia Edad vs Formato",
+    "PH 2: Medias Libros (18-29 > 45-59)",
+    "PH 3: Prop. Digital (2022 > 2020)"
+  ),
+  Distribucion = c("Chi-Cuadrada", "t de Welch", "Normal (Z)"),
+  Estadistico = c(round(chi_base$statistic, 2), round(ph2$statistic, 2), round(z_calculado, 2)),
+  Valor_Critico = c(round(val_crit_chi, 2), round(val_crit_t, 2), round(val_crit_z, 2)),
+  Valor_p = c("1.58e-16", "0.000068", "1.52e-07"),
+  Decision = c("Rechazar H0", "Rechazar H0", "Rechazar H0")
+)
+
+# Renombrar columnas
+colnames(tabla_ph) <- c("Prueba", "Distribución", "Estadístico Calc.", "Valor Crítico", "Valor p", "Decisión")
+
+# Renderizar tabla alineando números al centro
+knitr::kable(tabla_ph, align = "lccccc", caption = "Resumen de Pruebas de Hipótesis (alpha = 0.04)")
+```
+
+#Graficos estadísticos e inferenciales
+
+```{r}
+# Configuración del panel de 2x2
+par(mfrow = c(2, 2), mar = c(4.5, 5, 3, 1))
+
+
+# IC 1: Diferencia de Proporciones (Internet: 18-29 vs 60+)
+
+est1 <- ic1$estimate[1] - ic1$estimate[2]
+plot(est1, 1, xlim = c(0.35, 0.52), ylim = c(0.5, 1.5), yaxt = "n", pch = 19, cex = 1.5, col = "#2a78d6",
+     xlab = "Diferencia en Proporción (p1 - p2)", ylab = "", main = "IC 1: Internet (18-29 vs 60+)")
+arrows(ic1$conf.int[1], 1, ic1$conf.int[2], 1, angle = 90, code = 3, length = 0.1, col = "#2a78d6", lwd = 2)
+abline(v = 0, col = "gray40", lty = 2, lwd = 1.5)  # Valor nulo (0)
+text(est1, 1.2, paste0("Est: ", round(est1, 3), "\n[", round(ic1$conf.int[1], 3), ", ", round(ic1$conf.int[2], 3), "]"), cex = 0.85)
+
+
+# IC 2: Diferencia de Proporciones (Lectura Libros: 2020 vs 2022)
+
+est2 <- ic2$estimate[1] - ic2$estimate[2]
+plot(est2, 1, xlim = c(-0.06, 0.04), ylim = c(0.5, 1.5), yaxt = "n", pch = 19, cex = 1.5, col = "#1baf7a",
+     xlab = "Diferencia en Proporción (p2020 - p2022)", ylab = "", main = "IC 2: Libros (2020 vs 2022)")
+arrows(ic2$conf.int[1], 1, ic2$conf.int[2], 1, angle = 90, code = 3, length = 0.1, col = "#1baf7a", lwd = 2)
+abline(v = 0, col = "red", lty = 2, lwd = 1.5)  # Incluye al 0 => No hay diferencia
+text(est2, 1.2, paste0("Est: ", round(est2, 3), "\n[", round(ic2$conf.int[1], 3), ", ", round(ic2$conf.int[2], 3), "]"), cex = 0.85)
+
+
+# IC 3: Media Poblacional de Minutos de Lectura Continua (p26)
+
+est3 <- ic3$estimate
+plot(est3, 1, xlim = c(38, 44), ylim = c(0.5, 1.5), yaxt = "n", pch = 19, cex = 1.5, col = "#eda100",
+     xlab = "Media de Minutos (min)", ylab = "", main = "IC 3: Minutos Continuos (p26)")
+arrows(ic3$conf.int[1], 1, ic3$conf.int[2], 1, angle = 90, code = 3, length = 0.1, col = "#eda100", lwd = 2)
+text(est3, 1.2, paste0("Media: ", round(est3, 1), " min\n[", round(ic3$conf.int[1], 1), ", ", round(ic3$conf.int[2], 1), "]"), cex = 0.85)
+
+
+# IC 4: Cociente de Varianzas (p4: 18-29 / 45-59)
+
+est4 <- ic4$estimate
+plot(est4, 1, xlim = c(1.5, 2.6), ylim = c(0.5, 1.5), yaxt = "n", pch = 19, cex = 1.5, col = "#eb6834",
+     xlab = "Razon de Varianzas (s1^2 / s2^2)", ylab = "", main = "IC 4: Cociente Varianzas (p4)")
+arrows(ic4$conf.int[1], 1, ic4$conf.int[2], 1, angle = 90, code = 3, length = 0.1, col = "#eb6834", lwd = 2)
+abline(v = 1, col = "gray40", lty = 2, lwd = 1.5)  # Valor nulo de varianzas iguales (1)
+text(est4, 1.2, paste0("Cociente: ", round(est4, 2), "\n[", round(ic4$conf.int[1], 2), ", ", round(ic4$conf.int[2], 2), "]"), cex = 0.85)
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+par(mfrow = c(3, 1), mar = c(4.5, 4.5, 3, 1))
+
+
+# PRUEBA 1: Edad vs Formato
+
+df_chi <- chi_base$parameter
+val_crit_chi <- qchisq(1 - alfa, df = df_chi)
+stat_chi <- chi_base$statistic
+
+x1 <- seq(0, 25, length = 500)
+y1 <- dchisq(x1, df = df_chi)
+
+plot(x1, y1, type = "l", lwd = 2, col = "black",
+     main = expression(paste("Prueba 1: Distribución ", Chi^2, " (df = 6) - Independencia Edad vs Formato")),
+     xlab = expression(Chi^2), ylab = "Densidad", xlim = c(0, 25))
+
+# Sombra región de rechazo (alfa = 0.04)
+x_red1 <- seq(val_crit_chi, 25, length = 200)
+y_red1 <- dchisq(x_red1, df = df_chi)
+polygon(c(val_crit_chi, x_red1, 25), c(0, y_red1, 0), col = rgb(1, 0, 0, 0.3), border = NA)
+
+# Línea del Valor Crítico
+abline(v = val_crit_chi, col = "red", lty = 2, lwd = 2)
+text(val_crit_chi + 1.2, max(y1) * 0.7, paste0("Val. Crítico = ", round(val_crit_chi, 2)), col = "red", cex = 0.85)
+
+# Indicador del Estadístico Calculado 
+arrows(22, max(y1) * 0.4, 24.5, max(y1) * 0.4, col = "blue", lwd = 3, length = 0.12)
+text(19, max(y1) * 0.4, paste0("Chi^2 calc = ", round(stat_chi, 1), "\n(Rechazar H0)"), col = "blue", font = 2, cex = 0.85)
+
+legend("topleft", legend = c("Aceptación H0", "Rechazo H0 (alpha=0.04)"), 
+       fill = c("white", rgb(1, 0, 0, 0.3)), bty = "n")
+
+
+# PRUEBA 2: Libros: 18-29 > 45-59
+
+df_t <- ph2$parameter
+val_crit_t <- qt(1 - alfa, df = df_t)
+stat_t <- ph2$statistic
+
+x2 <- seq(-3, 4.5, length = 500)
+y2 <- dt(x2, df = df_t)
+
+plot(x2, y2, type = "l", lwd = 2, col = "black",
+     main = "Prueba 2: Distribución t-Student (Unilateral Derecha) - Medias de Libros",
+     xlab = "t", ylab = "Densidad")
+
+# Sombra región de rechazo
+x_red2 <- seq(val_crit_t, 4.5, length = 200)
+y_red2 <- dt(x_red2, df = df_t)
+polygon(c(val_crit_t, x_red2, 4.5), c(0, y_red2, 0), col = rgb(1, 0, 0, 0.3), border = NA)
+
+# Líneas Crítica y Calculada
+abline(v = val_crit_t, col = "red", lty = 2, lwd = 2)
+abline(v = stat_t, col = "blue", lwd = 2.5)
+
+text(val_crit_t - 0.6, max(y2) * 0.8, paste0("t crítico = ", round(val_crit_t, 2)), col = "red", cex = 0.85)
+text(stat_t + 0.5, max(y2) * 0.5, paste0("t calc = ", round(stat_t, 2), "\n(Rechazar H0)"), col = "blue", font = 2, cex = 0.85)
+
+legend("topleft", legend = c("Aceptación H0", "Rechazo H0 (alpha=0.04)"), 
+       fill = c("white", rgb(1, 0, 0, 0.3)), bty = "n")
+
+
+# PRUEBA 3: Libro Digital: 2022 > 2020
+
+val_crit_z <- qnorm(1 - alfa)
+stat_z <- z_calculado  # sqrt(ph3$statistic)
+
+x3 <- seq(-3, 6, length = 500)
+y3 <- dnorm(x3)
+
+plot(x3, y3, type = "l", lwd = 2, col = "black",
+     main = "Prueba 3: Distribución Normal Z (Unilateral Derecha) - Proporción Digital",
+     xlab = "Z", ylab = "Densidad")
+
+# Sombra región de rechazo
+x_red3 <- seq(val_crit_z, 6, length = 200)
+y_red3 <- dnorm(x_red3)
+polygon(c(val_crit_z, x_red3, 6), c(0, y_red3, 0), col = rgb(1, 0, 0, 0.3), border = NA)
+
+# Líneas Crítica y Calculada
+abline(v = val_crit_z, col = "red", lty = 2, lwd = 2)
+abline(v = stat_z, col = "blue", lwd = 2.5)
+
+text(val_crit_z - 0.7, max(y3) * 0.8, paste0("Z crítico = ", round(val_crit_z, 2)), col = "red", cex = 0.85)
+text(stat_z - 0.6, max(y3) * 0.5, paste0("Z calc = ", round(stat_z, 2), "\n(Rechazar H0)"), col = "blue", font = 2, cex = 0.85)
+
+legend("topleft", legend = c("Aceptación H0", "Rechazo H0 (alpha=0.04)"), 
+       fill = c("white", rgb(1, 0, 0, 0.3)), bty = "n")
+
+par(mfrow = c(1, 1))
+```
+
+
+
